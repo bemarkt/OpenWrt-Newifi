@@ -8,6 +8,9 @@
 # Blog: https://p3terx.com
 #=============================================================
 
+# fw876/helloworld
+sed -i 's/^#\(.*helloworld\)/\1/' feeds.conf.default
+
 # Remove useless packages
 echo '删除旧版argon'
 rm -rf ./package/lean/luci-theme-argon
