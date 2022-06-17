@@ -149,7 +149,7 @@ jobs:
         if: steps.clone.outcome == 'success' && steps.compile.outcome == 'success' && env.REPO_TOKEN
         run: |
           cd $GITHUB_WORKSPACE
-          git clone -b main https://github.com/${{github.repository}}.git ${{matrix.target}}
+          git clone -b master https://github.com/${{github.repository}}.git ${{matrix.target}}
           export TARGE1="$(grep 'target: \[' ${{matrix.target}}/.github/workflows/compile.yml |sed 's/^[ ]*//g' |grep '^target' |cut -d '#' -f1 |sed 's/\[/\\&/' |sed 's/\]/\\&/')"
           export TARGE2="target: \\[${{matrix.target}}\\]"
           export QIDONG1="$(grep -A 1 'paths:' ${{matrix.target}}/.github/workflows/compile.yml |awk 'NR==2' |sed 's/^[ ]*//g' |sed 's/\//\\&/g')"
