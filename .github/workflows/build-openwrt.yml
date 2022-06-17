@@ -1,192 +1,214 @@
 #
-# Copyright (c) 2019-2020 P3TERX <https://p3terx.com>
+# 请大家记住拉取的是我的 281677160/build-actions 仓库，拉取的是其他仓库有问题，别问我，我也不清楚什么问题
 #
-# This is free software, licensed under the MIT License.
-# See /LICENSE for more information.
+# 因为SSH连接配置固件直接编译，会给github停止编译的,所以要另外触发启动编译程序
 #
-# https://github.com/P3TERX/Actions-OpenWrt
-# Description: Build OpenWrt using GitHub Actions
+# 新注册的帐号，SSH连接服务器的时间最好不要太长，10分钟左右就退出，没设置完就再来一次或者多次应该比较好
+#
+# 运行此程序不是直接编译，是修改配置文件和触发编译，正确运行完毕后，在Actions刷新网页看看你的编译程序运行了没有
+#
+# 如果不能触发compile启动,那您就设置好compile.yml文件，下载好.config配置文件覆盖到对应源码，再用compile.yml启动
+#
+# 一般情况下都能触发启动编译的，除非没设置好密匙，或者密匙过期了，或者密匙错误之类的
+#
+# REPO_TOKEN密匙制作教程：https://git.io/jm.md
+#
 #
 
-name: Newifi3 OpenWrt
-
-env:
-  REPO_URL: https://github.com/coolsnowwolf/lede
-  REPO_BRANCH: master
-  FEEDS_CONF: feeds.conf.default
-  CONFIG_FILE: .config
-  DIY_P1_SH: diy-part1.sh
-  DIY_P2_SH: diy-part2.sh
-  UPLOAD_BIN_DIR: false
-  UPLOAD_FIRMWARE: true
-  UPLOAD_COWTRANSFER: true
-  UPLOAD_WETRANSFER: true
-  UPLOAD_RELEASE: false
-  TZ: Asia/Shanghai
-
+name: 触发compile启动编译
 on:
-  repository_dispatch:
   workflow_dispatch:
     inputs:
       ssh:
-        description: "SSH connection to Actions"
+        description: "[ssh-actions]改成[ssh],再按[Run workflow]按钮启动,则开启SSH连接配置固件"
         required: false
-        default: "false"
-  watch:
-    types: started
+        default: "ssh-actions"
+      days:
+        description: "清理[X]天之前的Actions空间操作记录(可改)"
+        required: true
+        default: "7"
+      rele:
+        description: "保留[X]个Releases不被删除(可改)"
+        required: true
+        default: "10"
+
+# 定时触发开启开始编译(把下面两个#去掉开启,时间设置请看定时开启编译说明)
+#  schedule:
+#   - cron: 0 9 * * *
+
+env:
+  Github: https://github.com/${{github.repository}}
+  Author: ${{github.actor}}
+  Warehouse: ${{github.repository}}
+  Run_number: ${{github.run_number}}
+  Run_workflow: ${{github.workflow}}
+  REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
+  SCKEY: ${{ secrets.SCKEY }}
+  PUSH_PLUS_TOKEN: ${{ secrets.PUSH_PLUS_TOKEN }}
+  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TZ: Asia/Shanghai
 
 jobs:
   build:
-    runs-on: ubuntu-18.04
+    runs-on: ubuntu-20.04
+    if: github.event.repository.owner.id == github.event.sender.id
+
+    name: 启动${{matrix.target}}编译
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [Mortal_newifi_d2]
+
+        # [Lede_source,Lienol_source,Mortal_source,Tianling_source,openwrt_amlogic]
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@main
+      - name: 准备结束
+        uses: actions/checkout@v2
 
-      - name: Initialization environment
+      - name: 读取脚本设置
+        run: |
+          export matrixtarget="${{ matrix.target }}"
+          git clone --depth 1 -b main https://github.com/281677160/common ${GITHUB_WORKSPACE}/build/common
+          mv -f ${GITHUB_WORKSPACE}/build/common/*.sh ${GITHUB_WORKSPACE}/build/${{matrix.target}}/
+          chmod -R +x ${GITHUB_WORKSPACE}/build
+          source $GITHUB_WORKSPACE/build/${{matrix.target}}/common.sh && Diy_repo_url
+          source $GITHUB_WORKSPACE/build/${{matrix.target}}/common.sh && Diy_settings
+
+      - name: 定时启动编译时清理Actions空间和删除releases数值设置
+        run: |
+          if [[ -z "${{ github.event.inputs.days }}" ]] && [[ -z "${{ github.event.inputs.rele }}" ]]; then
+            echo "retain_days=7" >> $GITHUB_ENV
+            echo "keep_latest=10" >> $GITHUB_ENV
+          else
+            echo "retain_days=${{ github.event.inputs.days }}" >> $GITHUB_ENV
+            echo "keep_latest=${{ github.event.inputs.rele }}" >> $GITHUB_ENV
+          fi
+
+      - name: 部署编译环境
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
-          sudo -E apt-get -qq update
-          sudo -E apt-get -qq install $(curl -fsSL git.io/depends-ubuntu-1804)
-          sudo -E apt-get -qq autoremove --purge
-          sudo -E apt-get -qq clean
+          sudo -E apt-get -qq update -y
+          sudo -E apt-get -qq full-upgrade -y
+          sudo -E apt-get -qq install -y gawk git ccache gettext libssl-dev xsltproc zip git-core wget curl grep
           sudo timedatectl set-timezone "$TZ"
-          sudo mkdir -p /workdir
-          sudo chown $USER:$GROUPS /workdir
+          sudo mkdir -p /${{matrix.target}}
+          sudo chown $USER:$GROUPS /${{matrix.target}}
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
 
-      - name: Clone source code
-        working-directory: /workdir
+      - name: 下载"${{matrix.target}}"源码
+        id: clone
+        continue-on-error: true
+        working-directory: /${{matrix.target}}
         run: |
-          df -hT $PWD
-          git clone $REPO_URL -b $REPO_BRANCH openwrt
-          ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+          git clone -b "$REPO_BRANCH" --single-branch "$REPO_URL" openwrt
+          ln -sf /${{matrix.target}}/openwrt $GITHUB_WORKSPACE/openwrt
 
-      - name: Load custom feeds
+      - name: 公 告
+        continue-on-error: true
         run: |
-          [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
-          chmod +x $DIY_P1_SH
+          echo
+          source $GITHUB_WORKSPACE/build/${{matrix.target}}/common.sh && Diy_variable
+          source $GITHUB_WORKSPACE/build/${{matrix.target}}/common.sh && Diy_Notice
+
+      - name: 加载源,补丁和自定义设置
+        id: compile
+        continue-on-error: true
+        run: |
           cd openwrt
-          $GITHUB_WORKSPACE/$DIY_P1_SH
+          source $BUILD_PATH/common.sh && Diy_menu
 
-      - name: Update feeds
-        run: cd openwrt && ./scripts/feeds update -a
-
-      - name: Install feeds
-        run: cd openwrt && ./scripts/feeds install -a
-
-      - name: Load custom configuration
-        run: |
-          [ -e files ] && mv files openwrt/files
-          [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
-          chmod +x $DIY_P2_SH
-          cd openwrt
-          $GITHUB_WORKSPACE/$DIY_P2_SH
-
-      - name: SSH connection to Actions
-        uses: P3TERX/ssh2actions@v1.0.0
-        if: (github.event.inputs.ssh == 'true' && github.event.inputs.ssh  != 'false') || contains(github.event.action, 'ssh')
+      - name: SSH远程连接（制作.config配置文件）
+        if: env.SSH_ACTIONS == 'true' || (github.event.inputs.ssh == 'ssh')
+        uses: danshui-git/debugger-action@master
         env:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
 
-      - name: Download package
-        id: package
+      - name: 生成"${{matrix.target}}"配置文件
+        continue-on-error: true
         run: |
           cd openwrt
-          make defconfig
-          make download -j8
-          find dl -size -1024c -exec ls -l {} \;
-          find dl -size -1024c -exec rm -f {} \;
+          source $BUILD_PATH/common.sh && Diy_menu2
+          ./scripts/diffconfig.sh > ${GITHUB_WORKSPACE}/${CONFIG_FILE}
+          cp -Rf ${GITHUB_WORKSPACE}/${CONFIG_FILE} ${GITHUB_WORKSPACE}/config.txt
 
-      - name: Compile the firmware
-        id: compile
+      - name: 上传.config配置文件在 github actions
+        continue-on-error: true
+        if: env.UPLOAD_CONFIG == 'true'
+        uses: actions/upload-artifact@v2
+        with:
+          name: .config_${{ env.SOURCE }}_${{ env.TARGET_PROFILE }}_${{ env.Firmware_Date }}
+          path: config.txt
+
+      - name: 触发compile.yml启动"${{matrix.target}}"编译
+        id: gitpush
+        continue-on-error: true
+        if: steps.clone.outcome == 'success' && steps.compile.outcome == 'success' && env.REPO_TOKEN
+        run: |
+          cd $GITHUB_WORKSPACE
+          git clone -b main https://github.com/${{github.repository}}.git ${{matrix.target}}
+          export TARGE1="$(grep 'target: \[' ${{matrix.target}}/.github/workflows/compile.yml |sed 's/^[ ]*//g' |grep '^target' |cut -d '#' -f1 |sed 's/\[/\\&/' |sed 's/\]/\\&/')"
+          export TARGE2="target: \\[${{matrix.target}}\\]"
+          export QIDONG1="$(grep -A 1 'paths:' ${{matrix.target}}/.github/workflows/compile.yml |awk 'NR==2' |sed 's/^[ ]*//g' |sed 's/\//\\&/g')"
+          export QIDONG2="- 'build\/${{matrix.target}}\/start-up\/start'"
+          if [[ -n ${QIDONG1} ]] && [[ -n ${TARGE1} ]]; then
+            sed -i "s/${QIDONG1}/${QIDONG2}/g" ${{matrix.target}}/.github/workflows/compile.yml
+            sed -i "s/${TARGE1}/${TARGE2}/g" ${{matrix.target}}/.github/workflows/compile.yml
+          fi
+          cp -Rf $GITHUB_WORKSPACE/${CONFIG_FILE} ${{matrix.target}}/build/${{matrix.target}}/${{env.CONFIG_FILE}}
+          mkdir -p ${{matrix.target}}/build/${{matrix.target}}/start-up
+          echo "${{ env.SOURCE }}$(date +%Y年%m月%d号%H时%M分%S秒)" > ${{matrix.target}}/build/${{matrix.target}}/start-up/start
+          cd ${{matrix.target}}
+          git add .
+          git commit -m "启动${{matrix.target}}编译${{env.TARGET_PROFILE}}固件"
+          git push --force "https://${{ secrets.REPO_TOKEN }}@github.com/${{github.repository}}" HEAD:main
+
+      - name: 电报机器人或pushplus信息通知
+        if: env.PUSH_PLUS_TOKEN && env.SERVERCHAN_SCKEY == 'PUSH' || env.TELEGRAM_BOT_TOKEN && env.SERVERCHAN_SCKEY == 'TG'
+        run: |
+          if [[ "${SERVERCHAN_SCKEY}" == "TG" ]]; then
+            if [[ "${{steps.clone.outcome}}" == 'success' ]] && [[ "${{steps.gitpush.outcome}}" == 'success' ]] && [[ "${{steps.compile.outcome}}" == 'success' ]]; then
+              curl -k --data chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" --data "text=🎉 主人💕：您的编译脚本成功触发【${{matrix.target}}】文件夹编译【${{env.TARGET_PROFILE}}】固件中,请耐心等待...... 😋(${{env.Tongzhi_Date}})" "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage"
+            else
+              curl -k --data chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" --data "text=💥主人❌ ：上游扩展错误或者脚本错误,触发启动【${{matrix.target}}】失败,请点击触发脚本步骤查看详情!(${{env.Tongzhi_Date}})" "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage"
+              exit 1
+            fi
+          fi
+          if [[ "${SERVERCHAN_SCKEY}" == "PUSH" ]]; then
+            if [[ "${{steps.clone.outcome}}" == 'success' ]] && [[ "${{steps.gitpush.outcome}}" == 'success' ]] && [[ "${{steps.compile.outcome}}" == 'success' ]]; then
+              curl -k --data token="${{ secrets.PUSH_PLUS_TOKEN }}" --data title="开始编译【${{matrix.target}}】" --data "content=🎉 主人💕：您的编译脚本成功触发【${{matrix.target}}】文件夹编译【${{env.TARGET_PROFILE}}】固件中,请耐心等待...... 😋(${{env.Tongzhi_Date}})" "http://www.pushplus.plus/send"
+            else
+              curl -k --data token="${{ secrets.PUSH_PLUS_TOKEN }}" --data title="触发启动失败" --data "content=💥主人❌ ：上游扩展错误或者脚本错误,触发启动【${{matrix.target}}】失败,请点击触发脚本步骤查看详情!(${{env.Tongzhi_Date}})" "http://www.pushplus.plus/send"
+              exit 1
+            fi
+          fi
+
+      - name: 编译信息
+        continue-on-error: true
+        if: env.BY_INFORMATION == 'true'
         run: |
           cd openwrt
-          echo -e "$(nproc) thread compile"
-          make -j$(nproc) || make -j1 || make -j1 V=s
-          echo "::set-output name=status::success"
-          grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
-          [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
-          echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+          source $BUILD_PATH/upgrade.sh && GET_TARGET_INFO
+          source $BUILD_PATH/common.sh && Diy_xinxi
 
-      - name: Check space usage
-        if: (!cancelled())
-        run: df -hT
-
-      - name: Upload bin directory
-        uses: actions/upload-artifact@main
-        if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
+      - name: 清理Actions空间
+        if: env.REPO_TOKEN
+        uses: Mattraks/delete-workflow-runs@main
         with:
-          name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-          path: openwrt/bin
+          token: ${{ secrets.REPO_TOKEN }}
+          repository: ${{ github.repository }}
+          keep_minimum_runs: 0
+          retain_days: ${{ env.retain_days }}
 
-      - name: Organize files
-        id: organize
-        if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
-        run: |
-          cd openwrt/bin/targets/*/*
-          rm -rf packages
-          echo "FIRMWARE=$PWD" >> $GITHUB_ENV
-          echo "::set-output name=status::success"
-
-      - name: Upload firmware directory
-        uses: actions/upload-artifact@main
-        if: steps.organize.outputs.status == 'success' && !cancelled()
+      - name: 删除releases
+        if: env.REPO_TOKEN
+        uses: dev-drprasad/delete-older-releases@master
         with:
-          name: OpenWrt_firmware_${{ env.DEVICE_NAME }}_${{ env.FILE_DATE }}
-          path: ${{ env.FIRMWARE }}
-
-      - name: Upload firmware to cowtransfer
-        id: cowtransfer
-        if: steps.organize.outputs.status == 'success' && env.UPLOAD_COWTRANSFER == 'true' && !cancelled()
-        run: |
-          curl -fsSL git.io/file-transfer | sh
-          ./transfer cow --block 2621440 -s -p 64 --no-progress ${FIRMWARE} 2>&1 | tee cowtransfer.log
-          echo "::warning file=cowtransfer.com::$(cat cowtransfer.log | grep https)"
-          echo "::set-output name=url::$(cat cowtransfer.log | grep https | cut -f3 -d" ")"
-
-      - name: Upload firmware to WeTransfer
-        id: wetransfer
-        if: steps.organize.outputs.status == 'success' && env.UPLOAD_WETRANSFER == 'true' && !cancelled()
-        run: |
-          curl -fsSL git.io/file-transfer | sh
-          ./transfer wet -s -p 16 --no-progress ${FIRMWARE} 2>&1 | tee wetransfer.log
-          echo "::warning file=wetransfer.com::$(cat wetransfer.log | grep https)"
-          echo "::set-output name=url::$(cat wetransfer.log | grep https | cut -f3 -d" ")"
-
-      - name: Generate release tag
-        id: tag
-        if: env.UPLOAD_RELEASE == 'true' && !cancelled()
-        run: |
-          echo "::set-output name=release_tag::$(date +"%Y.%m.%d-%H%M")"
-          touch release.txt
-          [ $UPLOAD_COWTRANSFER = true ] && echo "🔗 [Cowtransfer](${{ steps.cowtransfer.outputs.url }})" >> release.txt
-          [ $UPLOAD_WETRANSFER = true ] && echo "🔗 [WeTransfer](${{ steps.wetransfer.outputs.url }})" >> release.txt
-          echo "::set-output name=status::success"
-
-      - name: Upload firmware to release
-        uses: softprops/action-gh-release@v1
-        if: steps.tag.outputs.status == 'success' && !cancelled()
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ steps.tag.outputs.release_tag }}
-          body_path: release.txt
-          files: ${{ env.FIRMWARE }}/*
-
-      - name: Delete workflow runs
-        uses: GitRML/delete-workflow-runs@main
-        with:
-          retain_days: 1
-          keep_minimum_runs: 3
-
-      - name: Remove old Releases
-        uses: dev-drprasad/delete-older-releases@v0.1.0
-        if: env.UPLOAD_RELEASE == 'true' && !cancelled()
-        with:
-          keep_latest: 3
+          repo: ${{ github.repository }}
+          keep_latest: ${{ env.keep_latest }}
           delete_tags: true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.REPO_TOKEN }}
