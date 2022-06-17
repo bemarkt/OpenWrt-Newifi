@@ -164,7 +164,7 @@ jobs:
           cd ${{matrix.target}}
           git add .
           git commit -m "启动${{matrix.target}}编译${{env.TARGET_PROFILE}}固件"
-          git push --force "https://${{ secrets.REPO_TOKEN }}@github.com/${{github.repository}}" HEAD:main
+          git push --force "https://${{ secrets.REPO_TOKEN }}@github.com/${{github.repository}}" HEAD:master
 
       - name: 电报机器人或pushplus信息通知
         if: env.PUSH_PLUS_TOKEN && env.SERVERCHAN_SCKEY == 'PUSH' || env.TELEGRAM_BOT_TOKEN && env.SERVERCHAN_SCKEY == 'TG'
