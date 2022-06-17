@@ -11,6 +11,11 @@
 name: compile
 on:
   workflow_dispatch:
+    inputs:
+      ssh:
+        description: "[ssh-actions]改成[ssh],再按[Run workflow]按钮启动,则开启SSH连接配置固件"
+        required: false
+        default: "ssh-actions"
   push:
     branches:
       - master
@@ -106,7 +111,14 @@ jobs:
           cd openwrt
           source $BUILD_PATH/upgrade.sh && GET_TARGET_INFO
           source $BUILD_PATH/common.sh && Diy_xinxi
-
+          
+      - name: SSH远程连接（制作.config配置文件）
+        if: github.event.inputs.ssh == 'ssh'
+        uses: danshui-git/debugger-action@master
+        env:
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+    
       - name: 下载软件包
         id: package
         run: |
